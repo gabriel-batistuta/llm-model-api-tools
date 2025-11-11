@@ -1,0 +1,34 @@
+[ {
+  "runId" : "fc7bffc1-f7b5-472e-a7a2-16134361c029",
+  "sequence" : 1,
+  "timestamp" : "2025-11-11T20:23:18.947657340Z",
+  "toolClass" : "BankToolsA",
+  "method" : "withdraw",
+  "params" : {
+    "account" : "BC12345",
+    "value" : 1000.0
+  },
+  "result" : true
+}, {
+  "runId" : "fc7bffc1-f7b5-472e-a7a2-16134361c029",
+  "sequence" : 2,
+  "timestamp" : "2025-11-11T20:23:18.949770023Z",
+  "toolClass" : "BankToolsA",
+  "method" : "deposit",
+  "params" : {
+    "account" : "ND87632",
+    "value" : 1000.0
+  },
+  "result" : true
+}, {
+  "runId" : "fc7bffc1-f7b5-472e-a7a2-16134361c029",
+  "sequence" : 3,
+  "timestamp" : "2025-11-11T20:23:18.949806209Z",
+  "toolClass" : "BankToolsA",
+  "method" : "taxes",
+  "params" : {
+    "account" : "BC12345",
+    "value" : 1.5
+  },
+  "result" : true
+} ]
