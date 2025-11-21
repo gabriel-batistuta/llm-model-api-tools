@@ -13,9 +13,6 @@ import java.util.*;
 import java.util.UUID;
 import java.util.concurrent.*;
 
-/**
- * MainRunner — versão focada exclusivamente no uso de TOOLs pelo LLM
- */
 public class MainRunner {
 
     private static final String PROMPT1 = "Transfer 1000 from account BC12345 to the account ND87632 by withdrawing from the first and depositing into the second. If both operations are successful, change 1.50 from the first account. If not, return the value to the account and don't charge the tax.";
@@ -26,13 +23,20 @@ public class MainRunner {
     private static final int RUNS_PER_COMBINATION = 10;
     private static final long OLLAMA_TIMEOUT_SECONDS = 300;
 
-    // Interface para o serviço de IA com ferramentas
     interface BankingAssistant {
         String chat(String userMessage);
     }
 
     public static void main(String[] args) throws Exception {
-        // Verificar se Ollama está disponível
+        String startFromConfig = getStartConfigFromArgs(args);
+        String startFromPrompt = getStartPromptFromArgs(args);
+        String startFromScenario = getStartScenarioFromArgs(args);
+
+        System.out.println("🚀 Iniciando execução a partir de: " +
+                (startFromConfig != null ? startFromConfig : "INÍCIO") + " " +
+                (startFromPrompt != null ? startFromPrompt : "") + " " +
+                (startFromScenario != null ? startFromScenario : ""));
+
         boolean ollamaAvailable = checkOllamaAvailability();
         System.out.println("Ollama available: " + ollamaAvailable);
 
@@ -41,7 +45,6 @@ public class MainRunner {
             System.exit(1);
         }
 
-        // 1) CRITÉRIOS DE ACEITAÇÃO
         Map<String, List<String>> acceptance = defineAcceptanceCriteria();
         saveAcceptanceToFile(acceptance, new File("results/acceptance_criteria.txt"));
 
@@ -51,10 +54,38 @@ public class MainRunner {
                 "P3", PROMPT3
         );
 
-        // 2) Loop de experimentos
+        boolean shouldStart = (startFromConfig == null); 
+
         for (String conf : CONFIGS) {
+            if (!shouldStart) {
+                if (conf.equals(startFromConfig)) {
+                    shouldStart = true;
+                    System.out.println("✅ Iniciando a partir da configuração: " + conf);
+                } else {
+                    System.out.println("⏭️  Pulando configuração: " + conf);
+                    continue;
+                }
+            }
+
             for (String pKey : prompts.keySet()) {
+                if (startFromPrompt != null && shouldStart) {
+                    if (!pKey.equals(startFromPrompt)) {
+                        System.out.println("⏭️  Pulando prompt: " + pKey);
+                        continue;
+                    } else {
+                        startFromPrompt = null;
+                    }
+                }
+
                 for (String scenarioSuffix : new String[]{"A", "B"}) {
+                    if (startFromScenario != null && shouldStart) {
+                        if (!scenarioSuffix.equals(startFromScenario)) {
+                            System.out.println("⏭️  Pulando cenário: " + scenarioSuffix);
+                            continue;
+                        } else {
+                            startFromScenario = null;
+                        }
+                    }
 
                     ScenarioController.Scenario scEnum = mapToScenario(pKey, scenarioSuffix);
                     System.out.printf("=== Running config=%s prompt=%s scenario=%s ===%n", conf, pKey, scenarioSuffix);
@@ -71,42 +102,33 @@ public class MainRunner {
                         String llmResponseText;
                         boolean usedLlm = false;
 
-                        // -----------------------------
-                        // CHAMADA OBRIGATÓRIA DO LLM COM FERRAMENTAS
-                        // -----------------------------
                         try {
                             llmResponseText = callWithTools(prompts.get(pKey), conf, a, b);
                             usedLlm = true;
                         } catch (Exception e) {
                             System.err.println("ERROR in LLM call: " + e.getMessage());
                             llmResponseText = "[ERROR] " + e.getMessage();
-                            // Não há fallback - se falhar, termina a execução
                             throw new RuntimeException("LLM call failed for config " + conf + " prompt " + pKey + " scenario " + scenarioSuffix, e);
                         }
 
-                        // grava logs da execução no disco
                         File out = new File("results/run-" + runId + ".json");
                         out.getParentFile().mkdirs();
                         logger.dumpJson(out);
 
-                        // Determinar quais ferramentas foram usadas
                         Set<String> toolsUsed = new LinkedHashSet<>();
                         for (Map<String, Object> ev : logger.getEvents()) {
                             Object tc = ev.get("toolClass");
                             if (tc != null) toolsUsed.add(tc.toString());
                         }
 
-                        // Verificar se o LLM realmente usou as ferramentas
                         if (toolsUsed.isEmpty()) {
                             System.err.println("WARNING: LLM did not use any tools for run " + runId);
                             toolsUsed.add("NO_TOOLS_USED");
                         }
 
-                        // Avaliação vs aceitação
                         List<String> expectedOps = acceptance.get(pKey + scenarioSuffix);
                         EvaluationResult eval = evaluateRun(logger.getEvents(), expectedOps);
 
-                        // Montar resumo de execução
                         Map<String, Object> runSummary = new LinkedHashMap<>();
                         runSummary.put("runId", runId);
                         runSummary.put("config", conf);
@@ -120,7 +142,6 @@ public class MainRunner {
                         runSummary.put("eventsCount", logger.getEvents().size());
                         runSummaries.add(runSummary);
 
-                        // salvar resumo de cada execução
                         File summaryOut = new File(String.format("results/summary-%s-%s-%s-run%d.json", conf, pKey, scenarioSuffix, runIdx + 1));
                         try (FileWriter fw = new FileWriter(summaryOut)) {
                             fw.write(new com.fasterxml.jackson.databind.ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(runSummary));
@@ -131,7 +152,7 @@ public class MainRunner {
                         System.out.printf("Run %d/%d completed - Tools used: %s, Correct: %s%n",
                                 runIdx + 1, RUNS_PER_COMBINATION, toolsUsed, eval.correct);
 
-                        // Pequena pausa entre execuções para não sobrecarregar o Ollama
+                        // pausa entre execuções para não sobrecarregar o Ollama
                         try {
                             Thread.sleep(1000);
                         } catch (InterruptedException e) {
@@ -139,7 +160,6 @@ public class MainRunner {
                         }
                     } // runs
 
-                    // Agregar métricas por combinação
                     AggregatedMetrics aggregated = aggregateMetrics(runSummaries);
                     File aggOut = new File(String.format("results/aggregated-%s-%s-%s.json", conf, pKey, scenarioSuffix));
                     try (FileWriter fw = new FileWriter(aggOut)) {
@@ -155,9 +175,42 @@ public class MainRunner {
         System.out.println("All experiments finished. Check results/ for logs and summaries.");
     }
 
-    /**
-     * Chama o modelo com integração OBRIGATÓRIA de ferramentas
-     */
+    private static String getStartConfigFromArgs(String[] args) {
+        if (args.length > 0) {
+            String config = args[0].toUpperCase();
+            if (Arrays.asList(CONFIGS).contains(config)) {
+                return config;
+            } else {
+                System.err.println("⚠️  Configuração inválida: " + config + ". Usando: " + Arrays.toString(CONFIGS));
+            }
+        }
+        return null;
+    }
+
+    private static String getStartPromptFromArgs(String[] args) {
+        if (args.length > 1) {
+            String prompt = args[1].toUpperCase();
+            if (prompt.matches("P[1-3]")) {
+                return prompt;
+            } else {
+                System.err.println("⚠️  Prompt inválido: " + prompt + ". Usando: P1, P2, P3");
+            }
+        }
+        return null;
+    }
+
+    private static String getStartScenarioFromArgs(String[] args) {
+        if (args.length > 2) {
+            String scenario = args[2].toUpperCase();
+            if (scenario.equals("A") || scenario.equals("B")) {
+                return scenario;
+            } else {
+                System.err.println("⚠️  Cenário inválido: " + scenario + ". Usando: A, B");
+            }
+        }
+        return null;
+    }
+
     private static String callWithTools(String prompt, String config, BankToolsA toolsA, BankToolsB toolsB) {
         final String baseUrl = System.getenv("OLLAMA_BASE_URL");
         final String actualBaseUrl = (baseUrl == null || baseUrl.isBlank()) ? "http://localhost:11434" : baseUrl;
@@ -168,28 +221,55 @@ public class MainRunner {
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         Future<String> future = executor.submit(() -> {
-            try {
-                // Configurar o modelo Ollama usando LangChain4J - USANDO APENAS MISTRAL
-                dev.langchain4j.model.ollama.OllamaChatModel model =
-                        dev.langchain4j.model.ollama.OllamaChatModel.builder()
-                                .baseUrl(actualBaseUrl)
-                                .modelName("mistral:latest")
-                                .timeout(java.time.Duration.ofSeconds(300))
-                                .temperature(0.0)
-                                .build();
+            String[] modelNames = {"mistral:latest", "llama3.1:latest", "llama3:latest"};
+            int maxRetriesPerModel = 2;
+            Exception lastException = null;
 
-                // Construir o assistente com as ferramentas baseado na configuração
-                BankingAssistant assistant = buildAssistant(model, finalConfig, finalToolsA, finalToolsB);
+            for (String modelName : modelNames) {
+                for (int retry = 0; retry < maxRetriesPerModel; retry++) {
+                    try {
+                        System.out.println("🔄 Tentativa " + (retry + 1) + " com modelo: " + modelName);
 
-                // Chamar o modelo com o prompt
-                System.out.println("Calling LLM with prompt: " + finalPrompt.substring(0, Math.min(100, finalPrompt.length())) + "...");
-                String result = assistant.chat(finalPrompt);
-                System.out.println("LLM response received");
-                return result;
+                        dev.langchain4j.model.ollama.OllamaChatModel model =
+                                dev.langchain4j.model.ollama.OllamaChatModel.builder()
+                                        .baseUrl(actualBaseUrl)
+                                        .modelName(modelName)
+                                        .timeout(java.time.Duration.ofSeconds(300))
+                                        .temperature(0.0)
+                                        .build();
 
-            } catch (Exception e) {
-                throw new RuntimeException("LangChain4J call failed: " + e.getMessage(), e);
+                        BankingAssistant assistant = buildAssistant(model, finalConfig, finalToolsA, finalToolsB);
+
+                        System.out.println("Calling LLM with prompt: " + finalPrompt.substring(0, Math.min(100, finalPrompt.length())) + "...");
+                        String result = assistant.chat(finalPrompt);
+                        System.out.println("✅ LLM response received with model: " + modelName);
+                        return result;
+
+                    } catch (Exception e) {
+                        lastException = e;
+                        System.err.println("❌ Tentativa " + (retry + 1) + " com modelo " + modelName + " falhou: " + e.getMessage());
+
+                        if (e.getCause() instanceof IllegalArgumentException) {
+                            System.err.println("🔍 Erro de parâmetros inválidos - o modelo está gerando argumentos incorretos");
+                        }
+
+                        if (retry < maxRetriesPerModel - 1) {
+                            try {
+                                System.out.println("⏳ Aguardando 3 segundos antes da próxima tentativa...");
+                                Thread.sleep(3000);
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                                throw new RuntimeException(ie);
+                            }
+                        }
+                    }
+                }
+
+                System.out.println("🔁 Mudando para próximo modelo...");
             }
+
+            throw new RuntimeException("❌ Todos os modelos e tentativas falharam. Último erro: " +
+                    (lastException != null ? lastException.getMessage() : "Desconhecido"));
         });
 
         try {
@@ -198,7 +278,7 @@ public class MainRunner {
             future.cancel(true);
             throw new RuntimeException("Model response timed out after " + OLLAMA_TIMEOUT_SECONDS + " seconds");
         } catch (Exception e) {
-            throw new RuntimeException("LLM call failed: " + e.getCause().getMessage(), e);
+            throw new RuntimeException("LLM call failed: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), e);
         } finally {
             executor.shutdownNow();
         }
@@ -232,9 +312,6 @@ public class MainRunner {
         }
     }
 
-    /**
-     * Verifica se o Ollama está disponível
-     */
     private static boolean checkOllamaAvailability() {
         try {
             String baseUrl = System.getenv("OLLAMA_BASE_URL");
@@ -257,7 +334,7 @@ public class MainRunner {
     }
 
     // -----------------------------
-    // Acceptance criteria (mantidos)
+    // Acceptance criteria
     // -----------------------------
     private static Map<String, List<String>> defineAcceptanceCriteria() {
         Map<String, List<String>> acceptance = new LinkedHashMap<>();
@@ -297,7 +374,7 @@ public class MainRunner {
                 "payment(WS2754T,1200.0)"
         ));
         acceptance.put("P3B", List.of(
-                "withdraw(AG7340H,600.0) OR withdraw(TG23986Q,700.0) -> one fails",
+                "withdraw(AG7340H,600.0) OR withdraw(TG23986Q,700.0)->FAILED",
                 "returnValue(<the one that succeeded>, <value>)"
         ));
 
@@ -338,7 +415,6 @@ public class MainRunner {
         }
     }
 
-    // MÉTODO evaluateRun IMPLEMENTADO
     private static EvaluationResult evaluateRun(List<Map<String, Object>> events, List<String> expectedOps) {
         List<String> ops = new ArrayList<>();
         for (Map<String, Object> e : events) {
@@ -370,7 +446,6 @@ public class MainRunner {
             for (int j = idx; j < ops.size(); j++) {
                 String observed = ops.get(j);
                 if (expected.contains(" OR ")) {
-                    // Para critérios com OR, verificar se algum dos padrões é atendido
                     String[] options = expected.split(" OR ");
                     for (String opt : options) {
                         if (normalize(opt).equals(normalize(observed))) {
@@ -381,7 +456,6 @@ public class MainRunner {
                     }
                     if (matched) break;
                 } else if (expected.contains("<")) {
-                    // Para critérios com placeholders, verificar o método
                     String expectedMethod = expected.split("\\(")[0];
                     if (observed.startsWith(expectedMethod + "(")) {
                         matched = true;
@@ -456,7 +530,6 @@ public class MainRunner {
         return new AggregatedMetrics(total, correctCount, correctness, consistent, toolUsage);
     }
 
-    // CLASSE EvaluationResult
     private static class EvaluationResult {
         final boolean correct;
         final List<String> mismatches;
@@ -472,7 +545,6 @@ public class MainRunner {
             this.expectedCount = expectedOps.size();
             this.observedCount = observedOps.size();
 
-            // Calcular precisão de sequência
             int matches = 0;
             int minSize = Math.min(expectedOps.size(), observedOps.size());
             for (int i = 0; i < minSize; i++) {
@@ -495,7 +567,6 @@ public class MainRunner {
         }
     }
 
-    // CLASSE AggregatedMetrics
     private static class AggregatedMetrics {
         final int totalRuns;
         final int correctRuns;
